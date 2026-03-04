@@ -1,0 +1,12 @@
+# Goose-Goose-Duck.ai dependencies
+
+# LLM API clients
+zhipuai>=2.0.0
+openai>=1.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+pyyaml>=6.0
+
+# Logging
+colorlog>=6.7.0

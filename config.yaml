@@ -1,0 +1,70 @@
+# Goose-Goose-Duck.ai 配置文件
+
+# LLM配置
+llm:
+  # 默认使用GLM-4
+  model: "glm-4"
+  api_key: ""  # 从环境变量 GLM_API_KEY 读取
+  base_url: "https://open.bigmodel.cn/api/paas/v4/"
+  temperature: 0.7
+  max_tokens: 2000
+
+  # 备选模型配置
+  alternatives:
+    openai:
+      model: "gpt-4"
+      api_key: ""  # 从环境变量 OPENAI_API_KEY 读取
+      base_url: "https://api.openai.com/v1"
+    deepseek:
+      model: "deepseek-chat"
+      api_key: ""  # 从环境变量 DEEPSEEK_API_KEY 读取
+      base_url: "https://api.deepseek.com"
+
+# 游戏配置
+game:
+  # 玩家数量
+  player_count: 6
+
+  # 角色分配 (鹅:鸭:中立 = 3:2:1)
+  roles:
+    goose:  # 鹅阵营
+      - name: "鹅"
+        count: 3
+        description: "好人阵营，需要通过投票找出鸭子"
+    duck:  # 鸭阵营
+      - name: "鸭子"
+        count: 2
+        description: "坏人阵营，需要隐藏身份并消灭鹅"
+    neutral:  # 中立阵营
+      - name: "呆呆鸟"
+        count: 1
+        description: "中立阵营，需要被投票出局才能获胜"
+
+  # 对话轮次配置
+  discussion:
+    max_rounds: 3  # 每个阶段最大对话轮次
+    max_messages_per_round: 10  # 每轮最大消息数
+
+  # 游戏阶段
+  phases:
+    - "discussion"  # 讨论阶段
+    - "voting"      # 投票阶段
+    - "execution"   # 处决阶段
+
+# Agent配置
+agent:
+  # 记忆配置
+  memory:
+    max_history: 50  # 最大历史消息数
+    enable_rag: false  # 是否启用RAG（暂时关闭，后续实现）
+
+  # 行为配置
+  behavior:
+    enable_reflection: true  # 是否启用反思机制
+    enable_strategy: true    # 是否启用策略规划
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/game.log"
