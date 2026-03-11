@@ -6,6 +6,9 @@
         <span class="game-id">游戏 ID: {{ gameId }}</span>
         <span class="phase" :class="phaseClass">{{ phaseText }}</span>
         <span class="round">第 {{ round }} 轮</span>
+        <span class="task-progress" v-if="taskProgress">
+          任务: {{ taskProgress.completed }}/{{ taskProgress.total }}
+        </span>
       </div>
       <div class="controls">
         <el-button v-if="!isRunning && !isGameOver" type="success" @click="handleStart">
@@ -36,10 +39,21 @@
         </div>
       </div>
 
-      <!-- 中间：对话区域 -->
-      <div class="dialogue-panel">
-        <h3>对话记录</h3>
-        <DialoguePanel :dialogues="dialogues" />
+      <!-- 中间：对话/地图区域 -->
+      <div class="center-panel">
+        <el-tabs v-model="activeTab">
+          <el-tab-pane label="💬 对话记录" name="dialogue">
+            <DialoguePanel :dialogues="dialogues" />
+          </el-tab-pane>
+          <el-tab-pane label="🗺️ 地图" name="map">
+            <GameMap
+              :rooms="mapRooms"
+              :players="mapPlayers"
+              :task-completed="taskProgress?.completed || 0"
+              :task-total="taskProgress?.total || 0"
+            />
+          </el-tab-pane>
+        </el-tabs>
       </div>
 
       <!-- 右侧：投票/事件 -->
@@ -78,12 +92,14 @@ import PlayerCard from '@/components/PlayerCard.vue'
 import DialoguePanel from '@/components/DialoguePanel.vue'
 import VotingPanel from '@/components/VotingPanel.vue'
 import EventLog from '@/components/EventLog.vue'
+import GameMap from '@/components/GameMap.vue'
 
 const route = useRoute()
 const router = useRouter()
 const gameStore = useGameStore()
 
 const showGameOverDialog = ref(false)
+const activeTab = ref('dialogue')
 
 // 从路由获取游戏 ID
 const gameId = computed(() => route.params.id as string || gameStore.gameId)
@@ -97,6 +113,19 @@ const isRunning = computed(() => gameStore.isRunning)
 const isPaused = computed(() => gameStore.isPaused)
 const result = computed(() => gameStore.result)
 const isGameOver = computed(() => gameStore.isGameOver)
+
+// 地图相关
+const mapRooms = computed(() => gameStore.mapInfo?.rooms || {})
+const mapPlayers = computed(() => {
+  const pos: Record<string, any> = {}
+  for (const p of players.value) {
+    if (p.room_id) {
+      pos[p.agent_id] = p
+    }
+  }
+  return pos
+})
+const taskProgress = computed(() => gameStore.mapInfo?.task_progress || null)
 
 // 阶段显示
 const phaseText = computed(() => {
@@ -260,7 +289,7 @@ onUnmounted(() => {
 }
 
 .players-panel,
-.dialogue-panel,
+.center-panel,
 .side-panel {
   background: white;
   border-radius: 8px;
@@ -268,6 +297,33 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   display: flex;
   flex-direction: column;
+}
+
+.center-panel {
+  overflow: hidden;
+}
+
+.center-panel :deep(.el-tabs) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.center-panel :deep(.el-tabs__content) {
+  flex: 1;
+  overflow: hidden;
+}
+
+.center-panel :deep(.el-tab-pane) {
+  height: 100%;
+}
+
+.task-progress {
+  background: #f0f9eb;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #67c23a;
 }
 
 .players-panel h3,
