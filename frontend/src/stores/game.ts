@@ -21,6 +21,17 @@ export const useGameStore = defineStore('game', () => {
   const isConnected = ref(false)
   const error = ref<string | null>(null)
 
+  // 地图信息
+  interface MapInfo {
+    rooms: Record<string, any>
+    task_progress: {
+      completed: number
+      total: number
+      percentage: number
+    }
+  }
+  const mapInfo = ref<MapInfo | null>(null)
+
   // WebSocket 实例
   let ws: GameWebSocket | null = null
 
@@ -43,6 +54,7 @@ export const useGameStore = defineStore('game', () => {
       votes.value = {}
       isRunning.value = false
       isPaused.value = false
+      mapInfo.value = null
 
       // 连接 WebSocket
       await connectWebSocket()
@@ -108,6 +120,8 @@ export const useGameStore = defineStore('game', () => {
     ws.on('player_died', handlePlayerDied)
     ws.on('game_over', handleGameOver)
     ws.on('error', handleError)
+    ws.on('position_update', handlePositionUpdate)
+    ws.on('map_update', handleMapUpdate)
 
     await ws.connect()
     isConnected.value = true
@@ -194,6 +208,38 @@ export const useGameStore = defineStore('game', () => {
     error.value = event.message || '未知错误'
   }
 
+  function handlePositionUpdate(event: WebSocketEvent) {
+    console.log('Position update:', event)
+    // 更新玩家位置信息
+    if (event.positions) {
+      for (const [agentId, posInfo] of Object.entries(event.positions)) {
+        const player = players.value.find((p) => p.agent_id === agentId)
+        if (player) {
+          (player as any).room_id = (posInfo as any).room_id
+        }
+      }
+    }
+  }
+
+  function handleMapUpdate(event: WebSocketEvent) {
+    console.log('Map update:', event)
+    if (event.mapInfo) {
+      mapInfo.value = event.mapInfo
+    }
+    if (event.rooms) {
+      if (!mapInfo.value) {
+        mapInfo.value = { rooms: {}, task_progress: { completed: 0, total: 0, percentage: 0 } }
+      }
+      mapInfo.value.rooms = event.rooms
+    }
+    if (event.task_progress) {
+      if (!mapInfo.value) {
+        mapInfo.value = { rooms: {}, task_progress: { completed: 0, total: 0, percentage: 0 } }
+      }
+      mapInfo.value.task_progress = event.task_progress
+    }
+  }
+
   function reset() {
     disconnectWebSocket()
     gameId.value = null
@@ -206,6 +252,7 @@ export const useGameStore = defineStore('game', () => {
     isRunning.value = false
     isPaused.value = false
     error.value = null
+    mapInfo.value = null
   }
 
   return {
@@ -221,6 +268,7 @@ export const useGameStore = defineStore('game', () => {
     isPaused,
     isConnected,
     error,
+    mapInfo,
 
     // 计算属性
     alivePlayers,

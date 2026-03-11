@@ -8,9 +8,16 @@ export type WebSocketEventType =
   | 'dialogue'
   | 'vote_cast'
   | 'player_died'
+  | 'player_killed'
   | 'game_over'
   | 'error'
   | 'subscribed'
+  | 'position_update'
+  | 'map_update'
+  | 'body_discovered'
+  | 'meeting_called'
+  | 'task_completed'
+  | 'vote_tie'
 
 export interface WebSocketEvent {
   type: WebSocketEventType

@@ -13,6 +13,14 @@ class PlayerInfo(BaseModel):
     role: Optional[str] = Field(default=None, description="角色名称（游戏中可能隐藏）")
     camp: Optional[str] = Field(default=None, description="阵营（游戏中可能隐藏）")
     is_alive: bool = Field(default=True, description="是否存活")
+    room: Optional[str] = Field(default=None, description="当前房间")
+    room_id: Optional[str] = Field(default=None, description="当前房间ID")
+
+
+class MapInfo(BaseModel):
+    """地图信息"""
+    rooms: Dict[str, Any] = Field(default_factory=dict, description="房间信息")
+    task_progress: Dict[str, Any] = Field(default_factory=dict, description="任务进度")
 
 
 class GameStateResponse(BaseModel):
@@ -27,6 +35,7 @@ class GameStateResponse(BaseModel):
         description="当前对话记录"
     )
     votes: Dict[str, str] = Field(default_factory=dict, description="投票记录")
+    mapInfo: Optional[Dict[str, Any]] = Field(default=None, description="地图信息")
 
 
 class GameCreatedResponse(BaseModel):

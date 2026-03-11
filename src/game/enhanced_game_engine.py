@@ -111,6 +111,54 @@ class EnhancedGameEngine:
             await self.event_callback(event_type, data)
         logger.info(f"事件: {event_type} - {data}")
 
+    async def broadcast_position_update(self):
+        """广播位置更新"""
+        positions = {}
+        for agent_id in self.agents:
+            pos = self.vision_system.get_agent_position(agent_id)
+            if pos:
+                agent = self.agents[agent_id]
+                positions[agent_id] = {
+                    "name": agent.name,
+                    "room_id": pos.room_id,
+                    "is_alive": pos.is_alive,
+                    "is_ghost": pos.is_ghost
+                }
+
+        await self.broadcast_event("position_update", {
+            "positions": positions
+        })
+
+    async def broadcast_map_update(self):
+        """广播地图更新"""
+        rooms = {}
+        for room_id, room in self.game_map.rooms.items():
+            rooms[room_id] = {
+                "id": room_id,
+                "name": room.name,
+                "type": room.room_type.value,
+                "has_vent": room.has_vent,
+                "has_emergency_button": room.has_emergency_button,
+                "connected_rooms": room.connected_rooms,
+                "tasks": [
+                    {"id": t.task_id, "name": t.name, "completed": t.is_completed}
+                    for t in room.tasks
+                ]
+            }
+
+        completed, total = self.game_map.get_total_task_progress()
+
+        await self.broadcast_event("map_update", {
+            "mapInfo": {
+                "rooms": rooms,
+                "task_progress": {
+                    "completed": completed,
+                    "total": total,
+                    "percentage": round(completed / total * 100, 1) if total > 0 else 0
+                }
+            }
+        })
+
     def setup_game(self, player_names: Optional[List[str]] = None):
         """设置游戏"""
         logger.info("开始设置增强版游戏...")
@@ -142,6 +190,10 @@ class EnhancedGameEngine:
         # 获取出生点房间
         spawn_room = self.game_map.get_spawn_room()
 
+        # 获取所有房间，用于分散玩家
+        all_rooms = list(self.game_map.rooms.keys())
+        random.shuffle(all_rooms)
+
         # 创建 Agent
         for i, (name, role) in enumerate(zip(player_names, roles)):
             agent_id = f"agent_{i}"
@@ -160,8 +212,14 @@ class EnhancedGameEngine:
             # 添加到存活玩家列表
             self.game_state.alive_players.append(agent_id)
 
-            # 初始化位置（在出生点）
-            self.vision_system.initialize_agent(agent_id, spawn_room)
+            # 初始化位置（分散在不同房间，避免开局就被杀）
+            # 前两个玩家在出生点，其余分散到其他房间
+            if i < 2:
+                start_room = spawn_room
+            else:
+                start_room = all_rooms[i % len(all_rooms)]
+            self.vision_system.initialize_agent(agent_id, start_room)
+            logger.info(f"初始化 Agent {agent_id} ({name}) 位置在 {start_room}, 所有房间: {all_rooms}")
 
         # 分享阵营信息（鸭阵营互相认识）
         self.info_isolation.share_camp_information()
@@ -247,6 +305,9 @@ class EnhancedGameEngine:
         self.vision_system.move_agent(duck.agent_id, target_room)
         logger.info(f"鸭子 {duck.name} 移动到 {self.game_map.get_room_name(target_room)}")
 
+        # 广播位置更新
+        await self.broadcast_position_update()
+
     async def _duck_choose_target(self, duck: Agent, targets: List[str], context: str) -> Optional[str]:
         """鸭子选择击杀目标"""
         try:
@@ -306,6 +367,9 @@ class EnhancedGameEngine:
             "room": self.game_map.get_room_name(pos.room_id),
             "witnesses": [self.agents[w].name for w in event.witnesses]
         })
+
+        # 广播位置更新
+        await self.broadcast_position_update()
 
         logger.info(f"鸭子 {killer.name} 杀了 {victim.name} 在 {self.game_map.get_room_name(pos.room_id)}")
 
@@ -390,6 +454,8 @@ class EnhancedGameEngine:
                     "room": room_info['room_name']
                 })
                 logger.info(f"{agent.name} 完成任务: {task['name']}")
+                # 广播地图更新（任务进度变化）
+                await self.broadcast_map_update()
                 return
 
         # 移动到有任务的房间
@@ -398,6 +464,8 @@ class EnhancedGameEngine:
             target_room = random.choice(adjacent)
             self.vision_system.move_agent(agent.agent_id, target_room)
             logger.info(f"{agent.name} 移动到 {self.game_map.get_room_name(target_room)}")
+            # 广播位置更新
+            await self.broadcast_position_update()
 
     async def _duck_pretend_task(self, agent: Agent, room_info: Dict):
         """鸭子假装做任务"""
@@ -414,6 +482,8 @@ class EnhancedGameEngine:
         if adjacent:
             target_room = random.choice(adjacent)
             self.vision_system.move_agent(agent.agent_id, target_room)
+            # 广播位置更新
+            await self.broadcast_position_update()
 
     async def _neutral_move(self, agent: Agent, room_info: Dict):
         """中立角色移动"""
@@ -422,6 +492,8 @@ class EnhancedGameEngine:
             target_room = random.choice(adjacent)
             self.vision_system.move_agent(agent.agent_id, target_room)
             logger.info(f"{agent.name} 移动到 {self.game_map.get_room_name(target_room)}")
+            # 广播位置更新
+            await self.broadcast_position_update()
 
     async def _trigger_body_discovery(self):
         """触发发现尸体"""
@@ -614,11 +686,15 @@ class EnhancedGameEngine:
             })
 
             await self.broadcast_event("player_died", {
+                "player_name": voted_agent.name,
                 "player": voted_agent.name,
                 "role": voted_agent.role.name,
                 "camp": voted_agent.role.camp.value,
                 "cause": "vote"
             })
+
+            # 广播位置更新
+            await self.broadcast_position_update()
 
             logger.info(f"{voted_agent.name} ({voted_agent.role.name}) 被投票出局")
 
@@ -642,10 +718,21 @@ class EnhancedGameEngine:
         """
         logger.info("=== 增强版游戏开始 ===")
 
+        # 初始广播地图信息和玩家位置
+        await self.broadcast_map_update()
+        await self.broadcast_position_update()
+
         await self.broadcast_event("game_started", {
             "players": [
-                {"name": a.name, "role": a.role.name}
-                for a in self.agents.values()
+                {
+                    "agent_id": aid,
+                    "name": a.name,
+                    "is_alive": a.is_alive,
+                    "room": self.game_map.get_room_name(
+                        self.vision_system.get_agent_position(aid).room_id
+                    ) if self.vision_system.get_agent_position(aid) else None
+                }
+                for aid, a in self.agents.items()
             ]
         })
 
@@ -690,9 +777,11 @@ class EnhancedGameEngine:
         # 游戏结束
         self.game_state.phase = GamePhase.GAME_OVER
 
+        summary = self.get_game_summary()
         await self.broadcast_event("game_over", {
             "result": self.game_state.result.value,
-            "summary": self.get_game_summary()
+            "summary": summary,
+            "players": summary["players"]  # 添加到顶层供前端使用
         })
 
         logger.info(f"=== 游戏结束: {self.game_state.result.value} ===")
@@ -707,15 +796,17 @@ class EnhancedGameEngine:
             agent = self.agents[agent_id]
             alive_by_camp[agent.role.camp] += 1
 
+        logger.info(f"检查游戏结束: 鹅={alive_by_camp[Camp.GOOSE]}, 鸭={alive_by_camp[Camp.DUCK]}, 中立={alive_by_camp[Camp.NEUTRAL]}")
+
         # 检查任务完成度
         completed, total = self.game_map.get_total_task_progress()
         if total > 0 and completed / total >= self.task_completion_win:
             logger.info(f"鹅阵营获胜！（任务完成 {completed}/{total}）")
             return GameResult.GOOSE_WIN
 
-        # 检查鸭阵营是否获胜
-        if alive_by_camp[Camp.DUCK] >= alive_by_camp[Camp.GOOSE]:
-            logger.info("鸭阵营获胜！（鸭子数量 >= 鹅数量）")
+        # 检查鸭阵营是否获胜 - 鸭子数量必须严格大于鹅数量
+        if alive_by_camp[Camp.DUCK] > alive_by_camp[Camp.GOOSE]:
+            logger.info("鸭阵营获胜！（鸭子数量 > 鹅数量）")
             return GameResult.DUCK_WIN
 
         # 检查鹅阵营是否获胜
@@ -735,12 +826,14 @@ class EnhancedGameEngine:
             "task_progress": {"completed": completed, "total": total},
             "players": [
                 {
+                    "agent_id": aid,
                     "name": a.name,
                     "role": a.role.name,
                     "camp": a.role.camp.value,
+                    "is_alive": a.is_alive,
                     "status": "存活" if a.is_alive else "死亡"
                 }
-                for a in self.agents.values()
+                for aid, a in self.agents.items()
             ],
             "history": self.game_state.history
         }

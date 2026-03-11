@@ -12,7 +12,7 @@ from ..models.responses import (
     GameSummaryResponse,
     GameCreatedResponse
 )
-from ..services.game_service import GameService
+from ..services.enhanced_game_service import EnhancedGameService as GameService
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +33,9 @@ async def create_game(request: CreateGameRequest):
             config=request.config_override
         )
 
-        players = [
-            PlayerInfo(
-                agent_id=agent_id,
-                name=agent.name,
-                is_alive=agent.is_alive
-            )
-            for agent_id, agent in game_service.engine.agents.items()
-        ]
+        # 使用 _get_players_info 获取包含位置信息的玩家列表
+        players_data = game_service._get_players_info(reveal_roles=False)
+        players = [PlayerInfo(**p) for p in players_data]
 
         return GameCreatedResponse(
             game_id=game_service.game_id,
@@ -53,7 +48,7 @@ async def create_game(request: CreateGameRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/games/{game_id}", response_model=GameStateResponse)
+@router.get("/games/{game_id}")
 async def get_game_state(game_id: str):
     """
     获取游戏状态
@@ -65,7 +60,7 @@ async def get_game_state(game_id: str):
         raise HTTPException(status_code=404, detail="游戏不存在")
 
     state = game_service.get_state()
-    return GameStateResponse(**state)
+    return state
 
 
 @router.post("/games/{game_id}/start")

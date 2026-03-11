@@ -129,14 +129,25 @@ class EnhancedGameService:
 
     def get_state(self, reveal_roles: bool = False) -> Dict[str, Any]:
         """获取当前游戏状态"""
-        state = self.engine.get_state()
-        state["game_id"] = self.game_id
+        # 使用 game_state.to_dict() 获取基础状态
+        base_state = self.engine.game_state.to_dict()
+        state = {
+            "game_id": self.game_id,
+            "phase": base_state["phase"],
+            "round_num": base_state["round_num"],
+            "result": base_state["result"],
+            "votes": base_state.get("votes", {}),
+            "current_dialogues": [],  # 对话通过 WebSocket 实时推送
+        }
         state["events"] = self._events[-50:]  # 最近50个事件
 
         if reveal_roles or self.engine.game_state.result != GameResult.ONGOING:
             state["players"] = self._get_players_info(reveal_roles=True)
         else:
             state["players"] = self._get_players_info(reveal_roles=False)
+
+        # 添加地图信息
+        state["mapInfo"] = self.get_map_info()
 
         return state
 
@@ -147,6 +158,9 @@ class EnhancedGameService:
     def _get_players_info(self, reveal_roles: bool = False) -> List[Dict[str, Any]]:
         """获取玩家信息"""
         players = []
+        logger.info(f"获取玩家信息: agents={list(self.engine.agents.keys())}")
+        logger.info(f"视野系统位置: {[(aid, pos.room_id) for aid, pos in self.engine.vision_system.positions.items()]}")
+
         for agent_id, agent in self.engine.agents.items():
             info = {
                 "agent_id": agent_id,
@@ -160,6 +174,7 @@ class EnhancedGameService:
                 room = self.engine.game_map.get_room_by_id(pos.room_id)
                 info["room"] = room.name if room else pos.room_id
                 info["room_id"] = pos.room_id
+                logger.info(f"Agent {agent_id} room_id: {pos.room_id}")
 
             if reveal_roles or self.engine.game_state.result != GameResult.ONGOING:
                 info["role"] = agent.role.name

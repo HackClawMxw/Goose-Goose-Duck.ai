@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 class GamePhase(Enum):
     """游戏阶段枚举"""
     INIT = "初始化"
+    NIGHT = "夜晚"
+    DAY = "白天"
     DISCUSSION = "讨论阶段"
     VOTING = "投票阶段"
     EXECUTION = "处决阶段"

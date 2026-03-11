@@ -48,6 +48,10 @@ frontend/dist/
 .env.local
 .env.*.local
 
+# Config files with secrets
+config.yaml
+config.local.yaml
+
 # Logs
 logs/
 *.log
