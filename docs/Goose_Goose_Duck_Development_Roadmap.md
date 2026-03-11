@@ -14,26 +14,38 @@
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  src/                                                        │
-│  ├── agents/          # Agent系统 ✅                         │
-│  │   ├── agent.py     # Agent核心类                          │
-│  │   └── memory.py    # 短期记忆                             │
-│  │                                                          │
-│  ├── game/            # 游戏逻辑 ✅                           │
-│  │   ├── game_engine.py    # 游戏引擎                        │
-│  │   ├── game_state.py     # 状态管理                        │
-│  │   ├── dialogue_manager.py # 对话管理                      │
-│  │   └── information_isolation.py # 信息隔离                 │
-│  │                                                          │
-│  ├── llm/             # LLM接口 ✅                            │
-│  │   └── factory.py   # 多模型支持                           │
-│  │                                                          │
-│  ├── roles/           # 角色系统 ✅                           │
-│  │   └── role.py      # 角色/阵营定义                        │
-│  │                                                          │
-│  └── utils/           # 工具函数 ✅                           │
-│                                                              │
+│  ├── agents/              # Agent系统 ✅                     │
+│  │   ├── __init__.py                                      │
+│  │   ├── agent.py         # Agent核心类                     │
+│  │   └── memory.py        # 短期记忆 (AgentMemory)          │
+│  │                                                         │
+│  ├── game/                # 游戏逻辑 ✅                      │
+│  │   ├── __init__.py                                      │
+│  │   ├── game_engine.py       # 游戏引擎                    │
+│  │   ├── game_state.py        # 状态管理 (GameState)        │
+│  │   ├── dialogue_manager.py  # 对话管理 (DialogueManager)  │
+│  │   └── information_isolation.py  # 信息隔离               │
+│  │                                                         │
+│  ├── llm/                 # LLM接口 ✅                       │
+│  │   ├── __init__.py      # LLMFactory 多模型工厂           │
+│  │   ├── base.py          # BaseLLM 抽象基类                │
+│  │   ├── glm.py           # GLM 模型实现 (GLMLLM)           │
+│  │   └── openai_compatible.py  # OpenAI/DeepSeek 兼容实现   │
+│  │                                                         │
+│  ├── roles/               # 角色系统 ✅                      │
+│  │   ├── __init__.py                                      │
+│  │   ├── enums.py         # RoleType/Camp 枚举定义          │
+│  │   └── role.py          # Role 类实现                     │
+│  │                                                         │
+│  └── utils/               # 工具函数 ✅                      │
+│      ├── __init__.py                                      │
+│      └── logger.py        # 日志配置                        │
+│                                                            │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+> **注意**: 文档中提到的 `llm/factory.py` 实际位于 `llm/__init__.py` 中。
+> LLM 模块采用工厂模式，通过 `LLMFactory.create_llm()` 根据配置创建对应的 LLM 实例。
 
 **核心能力**：
 - ✅ 多Agent对话系统
@@ -43,6 +55,58 @@
 - ✅ LLM多模型支持（GLM/OpenAI/DeepSeek）
 - ✅ 短期记忆系统
 - ✅ 游戏流程自动化
+
+**代码实现详情**：
+
+| 模块 | 文件 | 主要类/函数 | 说明 |
+|-----|------|------------|------|
+| **agents** | `agent.py` | `Agent` | Agent核心类，包含 `speak()`, `vote()`, `observe()`, `die()` 方法 |
+| | `memory.py` | `AgentMemory`, `Message` | 短期记忆系统，支持 system/user/assistant/game 消息类型 |
+| **game** | `game_engine.py` | `GameEngine` | 游戏引擎，控制完整游戏流程 `run_game()` |
+| | `game_state.py` | `GameState`, `GamePhase`, `GameResult` | 状态管理，包含轮次、阶段、投票结果等 |
+| | `dialogue_manager.py` | `DialogueManager`, `DialogueMessage` | 对话管理，记录和格式化对话历史 |
+| | `information_isolation.py` | `InformationIsolation` | 信息隔离，实现鸭阵营互相认识 |
+| **llm** | `__init__.py` | `LLMFactory` | LLM工厂，根据模型名创建对应实例 |
+| | `base.py` | `BaseLLM` | 抽象基类，定义 `chat()`, `chat_with_system()` 接口 |
+| | `glm.py` | `GLMLLM` | GLM模型实现，使用 `zhipuai` 库 |
+| | `openai_compatible.py` | `OpenAICompatibleLLM` | OpenAI/DeepSeek兼容实现 |
+| **roles** | `enums.py` | `RoleType`, `Camp`, `ROLE_CAMP_MAP` | 角色类型和阵营枚举定义 |
+| | `role.py` | `Role` | 角色类，包含 `get_system_prompt()` 方法 |
+| **utils** | `logger.py` | - | 日志配置 |
+
+**LLM 模块详细说明**：
+
+```python
+# src/llm/__init__.py - LLMFactory 工厂类
+class LLMFactory:
+    @staticmethod
+    def create_llm(config: Dict[str, Any]) -> BaseLLM:
+        """
+        根据配置创建 LLM 实例
+        - 如果 model 名称包含 'glm'，创建 GLMLLM 实例
+        - 否则创建 OpenAICompatibleLLM 实例 (支持 OpenAI, DeepSeek 等)
+
+        环境变量支持:
+        - GLM_API_KEY: GLM 模型 API 密钥
+        - OPENAI_API_KEY: OpenAI API 密钥
+        - DEEPSEEK_API_KEY: DeepSeek API 密钥
+        """
+
+# src/llm/base.py - 抽象基类
+class BaseLLM(ABC):
+    @abstractmethod
+    def chat(messages, temperature, max_tokens) -> str: ...
+    @abstractmethod
+    def chat_with_system(system_prompt, user_message, ...) -> str: ...
+
+# src/llm/glm.py - GLM 实现
+class GLMLLM(BaseLLM):
+    """使用 zhipuai 库调用 GLM 模型"""
+
+# src/llm/openai_compatible.py - OpenAI 兼容实现
+class OpenAICompatibleLLM(BaseLLM):
+    """使用 openai 库调用 OpenAI/DeepSeek 等兼容模型"""
+```
 
 ### 1.2 待开发功能
 
@@ -101,15 +165,30 @@
 
 #### 2.2.1 记忆系统升级
 
-**MiroFish 的多层记忆架构**：
+**当前实现的短期记忆** (`src/agents/memory.py`)：
 
 ```python
-# 你当前的短期记忆
-class Memory:
-    messages: List[Dict]  # 简单的消息列表
+# 当前已有的 AgentMemory 类
+class AgentMemory:
+    """Agent记忆系统 - 当前实现"""
+    max_history: int = 50           # 最大历史消息数
+    messages: List[Message]         # 消息列表
 
-# 建议升级为多层记忆
-class EnhancedMemory:
+    # 支持的消息类型 (Message.role):
+    # - "system": 系统消息 (角色提示)
+    # - "user": 用户消息 (游戏提示)
+    # - "assistant": 助手消息 (Agent回复)
+    # - "game": 游戏消息 (事件通知)
+
+    # 主要方法:
+    # - add_system_message(content): 添加系统消息
+    # - add_user_message(content): 添加用户消息
+    # - add_assistant_message(content): 添加助手消息
+    # - add_game_message(content): 添加游戏消息
+    # - get_messages_for_llm(): 获取LLM调用格式的消息列表
+```
+
+**建议升级为多层记忆**：
     # Level 1: 工作记忆（当前轮次）
     working_memory: List[Dict]
     working_memory_limit: int = 10
@@ -1279,4 +1358,5 @@ class GameEvaluator:
 ---
 
 *文档生成时间: 2026-03-11*
+*最后更新: 2026-03-11 (修正项目结构，与实际代码对齐)*
 *适用于 Goose-Goose-Duck.ai 项目后续开发*
