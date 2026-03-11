@@ -8,6 +8,7 @@ from .game_engine import GameEngine
 from .map_system import GameMap, Room, Task, RoomType
 from .vision_system import VisionSystem, GameEvent, EventType, AgentPosition
 from .action_system import ActionType, GameAction, ActionValidator, ActionExecutor
+from .enhanced_game_engine import EnhancedGameEngine
 
 __all__ = [
     'DialogueManager', 'DialogueMessage',
@@ -17,5 +18,6 @@ __all__ = [
     # Phase 2 新增
     'GameMap', 'Room', 'Task', 'RoomType',
     'VisionSystem', 'GameEvent', 'EventType', 'AgentPosition',
-    'ActionType', 'GameAction', 'ActionValidator', 'ActionExecutor'
+    'ActionType', 'GameAction', 'ActionValidator', 'ActionExecutor',
+    'EnhancedGameEngine'
 ]
