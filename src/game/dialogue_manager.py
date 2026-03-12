@@ -22,13 +22,18 @@ class DialogueMessage:
 
 
 class DialogueManager:
-    """对话管理器"""
+    """对话管理器 - 支持发言顺序和信息隔离"""
 
     def __init__(self):
         """初始化对话管理器"""
         self.dialogue_history: List[DialogueMessage] = []
         self.current_round = 1
         self.current_phase = "discussion"
+
+        # 发言顺序管理
+        self.speaking_order: List[str] = []  # 当前轮发言顺序 (agent_id 列表)
+        self.current_speaker_index: int = 0
+        self.speaking_position_map: Dict[str, int] = {}  # agent_id -> position
 
     def add_dialogue(
         self,
@@ -63,15 +68,21 @@ class DialogueManager:
         self,
         agent_id: str,
         round_num: int = None,
-        phase: str = None
+        phase: str = None,
+        current_position: int = None
     ) -> List[DialogueMessage]:
         """
         获取特定Agent可见的对话历史
+
+        改进后的方法支持按发言位置过滤，
+        Agent 只能看到自己发言之前的对话。
 
         Args:
             agent_id: Agent ID
             round_num: 轮次（None表示所有轮次）
             phase: 阶段（None表示所有阶段）
+            current_position: Agent 在当前发言顺序中的位置
+                              如果提供，只返回该位置之前的对话
 
         Returns:
             可见的对话消息列表
@@ -85,6 +96,16 @@ class DialogueManager:
         # 按阶段过滤
         if phase is not None:
             messages = [m for m in messages if m.phase == phase]
+
+        # 按发言位置过滤（新增）
+        # Agent 只能看到自己发言位置之前的对话
+        if current_position is not None:
+            if current_position == 0:
+                # 第一个发言者看不到任何之前的对话
+                messages = []
+            elif len(messages) >= current_position:
+                # 只保留该位置之前的对话
+                messages = messages[:current_position]
 
         return messages
 
@@ -124,6 +145,43 @@ class DialogueManager:
         """设置当前阶段"""
         self.current_phase = phase
         logger.info(f"进入 {phase} 阶段")
+
+    def set_speaking_order(self, agent_ids: List[str]) -> None:
+        """
+        设置本轮发言顺序
+
+        Args:
+            agent_ids: Agent ID 列表，按发言顺序排列
+        """
+        self.speaking_order = agent_ids.copy()
+        self.current_speaker_index = 0
+        # 构建位置映射
+        self.speaking_position_map = {
+            agent_id: i for i, agent_id in enumerate(agent_ids)
+        }
+        logger.info(f"设置发言顺序: {agent_ids}")
+
+    def get_current_position(self, agent_id: str) -> int:
+        """
+        获取 Agent 在发言顺序中的位置
+
+        Args:
+            agent_id: Agent ID
+
+        Returns:
+            位置索引（如果不在列表中返回 -1）
+        """
+        return self.speaking_position_map.get(agent_id, -1)
+
+    def advance_speaker(self) -> None:
+        """推进到下一个发言者"""
+        self.current_speaker_index += 1
+
+    def get_current_speaker(self) -> Optional[str]:
+        """获取当前发言者 ID"""
+        if self.current_speaker_index < len(self.speaking_order):
+            return self.speaking_order[self.current_speaker_index]
+        return None
 
     def get_recent_dialogue(self, n: int = 10) -> List[DialogueMessage]:
         """获取最近的n条对话"""

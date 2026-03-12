@@ -231,7 +231,14 @@ class EnhancedGameEngine:
 
     async def run_night_phase(self):
         """
-        夜晚阶段 - 鸭子选择杀人目标
+        夜晚阶段 - 所有 Agent 独立行动
+
+        改进后的夜晚阶段：
+        1. 每个 Agent 都有独立思考和行动
+        2. 鸭子：寻找目标、击杀
+        3. 鹅：巡逻、休息
+        4. 呆呆鸟：观察
+        5. 所有行动都会记录并广播（但不影响其他 Agent 的信息）
         """
         logger.info(f"=== 第 {self.game_state.round_num} 轮 - 夜晚阶段 ===")
         self.game_state.phase = GamePhase.NIGHT
@@ -239,55 +246,162 @@ class EnhancedGameEngine:
         await self.broadcast_event("phase_changed", {
             "phase": "night",
             "round": self.game_state.round_num,
-            "message": "夜幕降临，鸭子开始行动..."
+            "message": "夜幕降临，所有人开始行动..."
         })
 
-        # 获取存活的鸭子
-        ducks = [self.agents[aid] for aid in self.game_state.alive_players
-                 if self.agents[aid].role.camp == Camp.DUCK]
+        # 所有存活的 Agent 按顺序行动
+        alive_agents = [self.agents[aid] for aid in self.game_state.alive_players]
+        random.shuffle(alive_agents)  # 随机顺序
 
-        if not ducks:
-            logger.info("没有存活的鸭子，跳过夜晚阶段")
+        for agent in alive_agents:
+            if not agent.is_alive:
+                continue
+
+            # Agent 夜晚独立思考
+            await self._agent_night_think(agent)
+
+            # 根据角色执行不同行动
+            if agent.role.camp == Camp.DUCK:
+                await self._duck_night_action(agent)
+            elif agent.role.camp == Camp.GOOSE:
+                await self._goose_night_action(agent)
+            else:  # DODO
+                await self._dodo_night_action(agent)
+
+            # 广播 Agent 行动日志（观察者视角）
+            await self._broadcast_agent_action(agent)
+
+            await asyncio.sleep(0.5)
+
+    async def _agent_night_think(self, agent: Agent):
+        """
+        Agent 夜晚独立思考
+
+        这是每个 Agent 在夜晚的私有思考过程，
+        记录在私有记忆中，不影响其他 Agent。
+        """
+        pos = self.vision_system.get_agent_position(agent.agent_id)
+        room_name = self.game_map.get_room_name(pos.room_id) if pos else "未知"
+
+        context = f"""第 {self.game_state.round_num} 轮 - 夜晚阶段
+你当前在 {room_name}。
+你的角色是 {agent.role.name} ({agent.role.camp.value})。
+"""
+
+        # 调用 Agent 的思考方法
+        try:
+            thought = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: agent.think(context, phase="night")
+            )
+
+            # 记录思考日志（用于观察者）
+            agent._last_night_thought = thought
+            agent._last_action = "思考"
+
+            logger.info(f"[夜晚思考] {agent.name}: {thought[:100]}...")
+
+        except Exception as e:
+            logger.error(f"Agent {agent.name} 夜晚思考失败: {e}")
+            agent._last_night_thought = "保持警惕..."
+            agent._last_action = "休息"
+
+    async def _duck_night_action(self, duck: Agent):
+        """鸭子夜晚行动 - 寻找目标并击杀"""
+        pos = self.vision_system.get_agent_position(duck.agent_id)
+        if not pos:
             return
 
-        # 每只鸭子选择杀人目标
-        for duck in ducks:
-            if not duck.is_alive:
+        # 获取同房间的其他存活玩家
+        targets = []
+        for aid in self.game_state.alive_players:
+            if aid == duck.agent_id:
                 continue
+            other_pos = self.vision_system.get_agent_position(aid)
+            if other_pos and other_pos.room_id == pos.room_id and other_pos.is_alive:
+                targets.append(self.agents[aid])
 
-            # 获取鸭子当前位置
-            pos = self.vision_system.get_agent_position(duck.agent_id)
-            if not pos:
+        if not targets:
+            # 鸭子需要移动找目标
+            await self._duck_hunt(duck)
+            return
+
+        # 鸭子选择目标（AI 决策）
+        target_names = [t.name for t in targets]
+        context = f"你是鸭子，现在是夜晚。你所在房间有以下玩家: {', '.join(target_names)}。选择一个目标进行击杀。"
+
+        target_name = await self._duck_choose_target(duck, target_names, context)
+
+        if target_name:
+            target = next((t for t in targets if t.name == target_name), None)
+            if target:
+                duck._last_action = f"准备击杀 {target_name}"
+                await self._execute_kill(duck, target)
+
+    async def _goose_night_action(self, goose: Agent):
+        """鹅夜晚行动 - 巡逻或休息"""
+        pos = self.vision_system.get_agent_position(goose.agent_id)
+        if not pos:
+            return
+
+        # 鹅在夜晚可能会移动巡逻，或者原地休息
+        # 这里简化为随机决定
+        action = random.choice(["patrol", "rest"])
+
+        if action == "patrol":
+            # 移动到相邻房间巡逻
+            adjacent = self.game_map.get_adjacent_rooms(pos.room_id)
+            if adjacent:
+                target_room = random.choice(adjacent)
+                self.vision_system.move_agent(goose.agent_id, target_room)
+                room_name = self.game_map.get_room_name(target_room)
+                goose._last_action = f"巡逻到 {room_name}"
+                logger.info(f"[夜晚] {goose.name} 巡逻到 {room_name}")
+                await self.broadcast_position_update()
+        else:
+            goose._last_action = "原地休息"
+            logger.info(f"[夜晚] {goose.name} 原地休息")
+
+    async def _dodo_night_action(self, dodo: Agent):
+        """呆呆鸟夜晚行动 - 观察周围"""
+        pos = self.vision_system.get_agent_position(dodo.agent_id)
+        if not pos:
+            return
+
+        # 呆呆鸟观察周围环境
+        room_name = self.game_map.get_room_name(pos.room_id)
+
+        # 获取同房间的其他玩家
+        others = []
+        for aid in self.game_state.alive_players:
+            if aid == dodo.agent_id:
                 continue
+            other_pos = self.vision_system.get_agent_position(aid)
+            if other_pos and other_pos.room_id == pos.room_id:
+                others.append(self.agents[aid].name)
 
-            # 获取同房间的其他存活玩家
-            targets = []
-            for aid in self.game_state.alive_players:
-                if aid == duck.agent_id:
-                    continue
-                other_pos = self.vision_system.get_agent_position(aid)
-                if other_pos and other_pos.room_id == pos.room_id and other_pos.is_alive:
-                    targets.append(self.agents[aid])
+        if others:
+            dodo._last_action = f"在{room_name}观察: {', '.join(others)}"
+        else:
+            dodo._last_action = f"在{room_name}独自观察"
 
-            if not targets:
-                # 鸭子需要移动找目标
-                await self._duck_hunt(duck)
-                continue
+        logger.info(f"[夜晚] {dodo.name} {dodo._last_action}")
 
-            # 鸭子选择目标（AI 决策）
-            target_names = [t.name for t in targets]
-            context = f"你是鸭子，现在是夜晚。你所在房间有以下玩家: {', '.join(target_names)}。选择一个目标进行击杀。"
+    async def _broadcast_agent_action(self, agent: Agent):
+        """
+        广播 Agent 行动日志（观察者视角）
 
-            # 构建决策提示
-            target_name = await self._duck_choose_target(duck, target_names, context)
+        这些日志用于前端展示，但不影响 Agent 之间的信息共享。
+        """
+        action_log = {
+            "agent_id": agent.agent_id,
+            "agent_name": agent.name,
+            "role": agent.role.name,
+            "action": getattr(agent, '_last_action', 'unknown'),
+            "thought_summary": getattr(agent, '_last_night_thought', '')[:200] if hasattr(agent, '_last_night_thought') else ''
+        }
 
-            if target_name:
-                target = next((t for t in targets if t.name == target_name), None)
-                if target:
-                    await self._execute_kill(duck, target)
-
-        # 等待一段时间（模拟夜晚）
-        await asyncio.sleep(2)
+        await self.broadcast_event("agent_action_log", action_log)
 
     async def _duck_hunt(self, duck: Agent):
         """鸭子寻找猎物"""
@@ -554,37 +668,57 @@ class EnhancedGameEngine:
         await self._execute_vote_result()
 
     async def _run_discussion(self):
-        """运行讨论"""
+        """
+        运行讨论 - 支持独立思考机制
+
+        改进后的流程：
+        1. 设置发言顺序
+        2. 每个 Agent 先进行独立思考（私有）
+        3. Agent 只能看到自己发言之前的对话
+        4. 基于策略发言，而非直接反应
+        """
         context = f"第 {self.game_state.round_num} 轮会议讨论。请发表你的看法。"
 
         alive_agents = [self.agents[aid] for aid in self.game_state.alive_players]
         random.shuffle(alive_agents)
 
-        for agent in alive_agents:
+        # 设置发言顺序
+        speaking_order = [a.agent_id for a in alive_agents]
+        self.dialogue_manager.set_speaking_order(speaking_order)
+
+        for i, agent in enumerate(alive_agents):
             if not agent.is_alive:
                 continue
 
-            # 构建上下文
-            dialogue_history = self.dialogue_manager.get_dialogue_for_agent(
-                agent.agent_id,
-                round_num=self.game_state.round_num
-            )
-            dialogue_context = self.dialogue_manager.format_dialogue_for_context(dialogue_history)
-            extra_knowledge = self.info_isolation.format_knowledge_for_prompt(agent.agent_id)
+            # 设置 Agent 当前轮次
+            agent.set_round(self.game_state.round_num)
 
-            # 添加目击信息
+            # Step 1: Agent 进行独立思考（私有）
+            await self._agent_think(agent, context, i)
+
+            # Step 2: 获取该 Agent 可见的对话历史（只看到前面的发言）
+            visible_dialogues = self.dialogue_manager.get_dialogue_for_agent(
+                agent.agent_id,
+                round_num=self.game_state.round_num,
+                current_position=i  # 只能看到前面的发言
+            )
+            dialogue_context = self.dialogue_manager.format_dialogue_for_context(visible_dialogues)
+
+            # Step 3: 获取额外知识和目击信息
+            extra_knowledge = self.info_isolation.format_knowledge_for_prompt(agent.agent_id)
             witnessed_events = self.vision_system.get_events_for_agent(agent.agent_id)
             witness_info = self._format_witnessed_events(witnessed_events)
 
+            # Step 4: 构建完整上下文
             full_context = f"{context}\n\n{dialogue_context}\n{extra_knowledge}\n{witness_info}"
 
-            # Agent 发言
+            # Step 5: Agent 发言
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: agent.speak(full_context)
             )
 
-            # 记录对话
+            # Step 6: 记录对话
             self.dialogue_manager.add_dialogue(
                 speaker_id=agent.agent_id,
                 speaker_name=agent.name,
@@ -592,7 +726,7 @@ class EnhancedGameEngine:
                 phase="discussion"
             )
 
-            # 广播对话
+            # Step 7: 广播对话
             await self.broadcast_event("dialogue", {
                 "speaker": agent.name,
                 "content": response,
@@ -600,7 +734,48 @@ class EnhancedGameEngine:
                 "round": self.game_state.round_num
             })
 
+            # 推进发言顺序
+            self.dialogue_manager.advance_speaker()
             await asyncio.sleep(0.5)
+
+    async def _agent_think(self, agent, context: str, position: int) -> None:
+        """
+        Agent 独立思考阶段
+
+        这是实现 Agent 独立性的核心方法。
+        思考过程存储在私有记忆中，其他 Agent 无法访问。
+
+        Args:
+            agent: Agent 对象
+            context: 当前情境
+            position: Agent 在发言顺序中的位置
+        """
+        # 获取当前可见的对话历史
+        visible_dialogues = self.dialogue_manager.get_dialogue_for_agent(
+            agent.agent_id,
+            round_num=self.game_state.round_num,
+            current_position=position
+        )
+        dialogue_context = self.dialogue_manager.format_dialogue_for_context(visible_dialogues)
+
+        # 获取私有观察
+        witnessed_events = self.vision_system.get_events_for_agent(agent.agent_id)
+        witness_info = self._format_witnessed_events(witnessed_events)
+
+        # 获取额外知识
+        extra_knowledge = self.info_isolation.format_knowledge_for_prompt(agent.agent_id)
+
+        # 构建思考上下文
+        think_context = f"{context}\n\n{dialogue_context}\n{extra_knowledge}\n{witness_info}"
+
+        # 执行独立思考
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: agent.think(think_context, phase="pre_discussion")
+            )
+        except Exception as e:
+            logger.error(f"Agent {agent.name} 思考失败: {e}")
 
     def _format_witnessed_events(self, events: List[GameEvent]) -> str:
         """格式化目击事件"""
@@ -622,7 +797,14 @@ class EnhancedGameEngine:
         return "\n".join(parts) if len(parts) > 1 else ""
 
     async def _run_voting(self):
-        """运行投票"""
+        """
+        运行投票 - 基于私有策略
+
+        改进后的流程：
+        1. 投票前进行独立思考
+        2. 基于私有策略投票
+        3. 不受其他 Agent 直接影响
+        """
         self.game_state.phase = GamePhase.VOTING
 
         await self.broadcast_event("phase_changed", {
@@ -639,6 +821,19 @@ class EnhancedGameEngine:
             if not agent.is_alive:
                 continue
 
+            # Step 1: 投票前的独立思考
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda a=agent: a.think(
+                        f"{context}\n候选人：{', '.join(candidates)}",
+                        phase="pre_vote"
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Agent {agent.name} 投票前思考失败: {e}")
+
+            # Step 2: 获取对话历史和额外知识
             dialogue_history = self.dialogue_manager.get_dialogue_for_agent(
                 agent.agent_id,
                 round_num=self.game_state.round_num
@@ -648,7 +843,7 @@ class EnhancedGameEngine:
 
             full_context = f"{context}\n\n{dialogue_context}\n{extra_knowledge}"
 
-            # Agent 投票
+            # Step 3: Agent 投票
             voted_name = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda a=agent, c=candidates, ctx=full_context: a.vote(c, ctx)
