@@ -60,10 +60,40 @@ class EnhancedGameEngine:
         self.night_phase_duration = self.config.get('game', {}).get('night_duration', 10)  # 秒
         self.task_completion_win = self.config.get('game', {}).get('task_completion_win', 0.8)  # 任务完成80%获胜
 
+        # LLM 超时配置（秒）
+        self.llm_timeout = self.config.get('llm', {}).get('timeout', 30)
+
         # 事件回调（用于 WebSocket 广播）
         self.event_callback: Optional[Callable] = None
 
         logger.info("增强版游戏引擎初始化完成")
+
+    async def _run_with_timeout(self, func, *args, default_return=None, **kwargs):
+        """
+        带超时的执行函数
+
+        Args:
+            func: 要执行的同步函数
+            *args: 函数参数
+            default_return: 超时时的默认返回值
+            **kwargs: 其他关键字参数
+
+        Returns:
+            函数执行结果或默认返回值
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: func(*args, **kwargs)),
+                timeout=self.llm_timeout
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM 调用超时 ({self.llm_timeout}秒)，使用默认返回值")
+            return default_return
+        except Exception as e:
+            logger.error(f"LLM 调用失败: {e}")
+            return default_return
 
     def _load_config(self) -> Dict[str, Any]:
         """加载配置文件"""
@@ -288,23 +318,21 @@ class EnhancedGameEngine:
 你的角色是 {agent.role.name} ({agent.role.camp.value})。
 """
 
-        # 调用 Agent 的思考方法
-        try:
-            thought = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: agent.think(context, phase="night")
-            )
+        # 获取已知玩家列表（用于怀疑对象提取）
+        known_players = [self.agents[aid].name for aid in self.game_state.alive_players if aid != agent.agent_id]
 
-            # 记录思考日志（用于观察者）
-            agent._last_night_thought = thought
-            agent._last_action = "思考"
+        # 调用 Agent 的思考方法（带超时）
+        thought = await self._run_with_timeout(
+            agent.think,
+            context, "night", known_players,
+            default_return="保持警惕..."
+        )
 
-            logger.info(f"[夜晚思考] {agent.name}: {thought[:100]}...")
+        # 记录思考日志（用于观察者）
+        agent._last_night_thought = thought
+        agent._last_action = "思考"
 
-        except Exception as e:
-            logger.error(f"Agent {agent.name} 夜晚思考失败: {e}")
-            agent._last_night_thought = "保持警惕..."
-            agent._last_action = "休息"
+        logger.info(f"[夜晚思考] {agent.name}: {thought[:100]}...")
 
     async def _duck_night_action(self, duck: Agent):
         """鸭子夜晚行动 - 寻找目标并击杀"""
@@ -431,18 +459,18 @@ class EnhancedGameEngine:
 请从以下目标中选择一个进行击杀: {', '.join(targets)}
 只返回目标名称，不要其他解释。"""
 
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.llm.chat_with_system(
-                    duck.role.get_strategy_prompt(),
-                    prompt
-                )
+            response = await self._run_with_timeout(
+                self.llm.chat_with_system,
+                duck.role.get_strategy_prompt(),
+                prompt,
+                default_return=None
             )
 
             # 解析响应，提取目标名称
-            for target in targets:
-                if target in response:
-                    return target
+            if response:
+                for target in targets:
+                    if target in response:
+                        return target
 
             # 如果没匹配到，随机选择
             return random.choice(targets) if targets else None
@@ -712,10 +740,11 @@ class EnhancedGameEngine:
             # Step 4: 构建完整上下文
             full_context = f"{context}\n\n{dialogue_context}\n{extra_knowledge}\n{witness_info}"
 
-            # Step 5: Agent 发言
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: agent.speak(full_context)
+            # Step 5: Agent 发言（带超时)
+            response = await self._run_with_timeout(
+                agent.speak,
+                full_context,
+                default_return="我认为大家都需要更谨慎一些..."
             )
 
             # Step 6: 记录对话
@@ -768,11 +797,15 @@ class EnhancedGameEngine:
         # 构建思考上下文
         think_context = f"{context}\n\n{dialogue_context}\n{extra_knowledge}\n{witness_info}"
 
-        # 执行独立思考
+        # 获取已知玩家列表（用于怀疑对象提取）
+        known_players = [self.agents[aid].name for aid in self.game_state.alive_players if aid != agent.agent_id]
+
+        # 执行独立思考（带超时）
         try:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: agent.think(think_context, phase="pre_discussion")
+            await self._run_with_timeout(
+                agent.think,
+                think_context, "pre_discussion", known_players,
+                default_return=None
             )
         except Exception as e:
             logger.error(f"Agent {agent.name} 思考失败: {e}")
@@ -821,14 +854,17 @@ class EnhancedGameEngine:
             if not agent.is_alive:
                 continue
 
-            # Step 1: 投票前的独立思考
+            # 获取已知玩家列表（排除自己，用于怀疑对象提取）
+            known_players_for_agent = [a.name for a in alive_agents if a.agent_id != agent.agent_id]
+
+            # Step 1: 投票前的独立思考（带超时）
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda a=agent: a.think(
-                        f"{context}\n候选人：{', '.join(candidates)}",
-                        phase="pre_vote"
-                    )
+                await self._run_with_timeout(
+                    agent.think,
+                    f"{context}\n候选人：{', '.join(candidates)}",
+                    "pre_vote",
+                    known_players_for_agent,
+                    default_return=None
                 )
             except Exception as e:
                 logger.error(f"Agent {agent.name} 投票前思考失败: {e}")
@@ -843,10 +879,12 @@ class EnhancedGameEngine:
 
             full_context = f"{context}\n\n{dialogue_context}\n{extra_knowledge}"
 
-            # Step 3: Agent 投票
-            voted_name = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda a=agent, c=candidates, ctx=full_context: a.vote(c, ctx)
+            # Step 3: Agent 投票（带超时）
+            voted_name = await self._run_with_timeout(
+                agent.vote,
+                candidates,
+                full_context,
+                default_return=random.choice(candidates) if candidates else ""
             )
 
             # 记录投票

@@ -54,7 +54,7 @@ class Agent:
         self.memory.add_system_message(self.role.get_system_prompt())
 
         # 初始化私有记忆系统（存储独立思考，其他 Agent 不可见）
-        self.private_memory = PrivateMemory(max_thoughts=100)
+        self.private_memory = PrivateMemory(max_thoughts=100, self_name=name)
 
         # 初始化策略模块
         self.strategy_module = StrategyModule(self.role, self.llm)
@@ -66,7 +66,7 @@ class Agent:
 
         logger.info(f"Agent初始化: {name} ({role.name})")
 
-    def think(self, context: str, phase: str = "pre_discussion") -> str:
+    def think(self, context: str, phase: str = "pre_discussion", known_players: List[str] = None) -> str:
         """
         Agent 独立思考过程
 
@@ -76,6 +76,7 @@ class Agent:
         Args:
             context: 当前情境
             phase: 思考阶段 (pre_discussion, during_discussion, pre_vote)
+            known_players: 已知的其他玩家名称列表（用于怀疑对象提取）
 
         Returns:
             思考结果（仅存储在私有记忆中）
@@ -133,8 +134,11 @@ class Agent:
         )
         self.private_memory.add_thought(thought)
 
-        # 从思考中提取怀疑对象
-        self._update_suspicions_from_thought(response)
+        # 从思考中提取怀疑对象（传入已知玩家列表，排除自己）
+        if known_players:
+            # 确保不包含自己
+            other_players = [p for p in known_players if p != self.name]
+            self._update_suspicions_from_thought(response, other_players)
 
         # 更新策略
         self.strategy_module.formulate_strategy(
@@ -145,29 +149,46 @@ class Agent:
         logger.debug(f"{self.name} 完成独立思考 ({phase})")
         return response
 
-    def _update_suspicions_from_thought(self, thought_content: str) -> None:
+    def _update_suspicions_from_thought(self, thought_content: str, known_players: List[str] = None) -> None:
         """
         从思考内容中提取怀疑对象
 
         Args:
             thought_content: 思考内容
+            known_players: 已知的其他玩家名称列表（不包括自己）
         """
-        # 简单的关键词匹配来识别怀疑对象
-        # 这里可以根据需要扩展更复杂的逻辑
-        suspicion_keywords = ["可疑", "怀疑", "可能是", "应该是", "像是"]
-        avoid_keywords = ["不像", "不是", "应该不是"]
+        if known_players is None:
+            # 如果没有传入玩家列表，无法提取
+            return
+
+        # 怀疑关键词
+        suspicion_keywords = ["可疑", "怀疑", "可能是", "应该是", "像是", "嫌疑", "不对劲"]
+        avoid_keywords = ["不像", "不是", "应该不是", "不太像", "排除"]
 
         lines = thought_content.split('\n')
         for line in lines:
-            line_lower = line.lower()
             # 检查是否有怀疑关键词
             has_suspicion = any(kw in line for kw in suspicion_keywords)
             has_avoid = any(kw in line for kw in avoid_keywords)
 
             if has_suspicion and not has_avoid:
-                # 尝试提取玩家名称（这里简化处理）
-                # 实际使用时可以结合已知玩家列表
-                pass
+                # 提取提到的其他玩家名称（排除自己）
+                for player_name in known_players:
+                    if player_name in line and player_name != self.name:
+                        # 计算怀疑分数（简单实现：基于关键词强度）
+                        score = 0.5
+                        if "非常" in line or "很" in line:
+                            score = 0.7
+                        if "确定" in line or "肯定" in line:
+                            score = 0.9
+
+                        self.update_suspicion(
+                            agent_id=player_name,  # 简化：用名称作为ID
+                            agent_name=player_name,
+                            score=score,
+                            reason=f"从思考中发现: {line[:50]}"
+                        )
+                        logger.debug(f"{self.name} 怀疑 {player_name}: {score:.2f}")
 
     def observe_private(self, event: str, event_type: str = "observation") -> None:
         """
@@ -204,6 +225,11 @@ class Agent:
             score: 怀疑分数 (0-1)
             reason: 怀疑原因
         """
+        # 【关键修复】绝对不能怀疑自己
+        if agent_id == self.agent_id or agent_name == self.name:
+            logger.warning(f"{self.name} 尝试怀疑自己，已阻止")
+            return
+
         self.private_memory.update_suspicion(
             agent_id, agent_name, score, reason, self._current_round
         )
@@ -272,9 +298,10 @@ class Agent:
         Agent投票 - 基于私有策略
 
         改进后的投票方法：
-        1. 优先投票给怀疑列表中的人
-        2. 考虑角色目标
-        3. 不受其他 Agent 直接影响
+        1. 排除自己（不能投给自己）
+        2. 优先投票给怀疑列表中的人
+        3. 考虑角色目标
+        4. 不受其他 Agent 直接影响
 
         Args:
             candidates: 候选人列表
@@ -287,15 +314,28 @@ class Agent:
         if not self.is_alive:
             return ""
 
+        # 【关键修复】排除自己 - 不能投给自己
+        valid_candidates = [c for c in candidates if c != self.name]
+        if not valid_candidates:
+            logger.warning(f"{self.name} 没有有效的投票候选人")
+            return ""
+
         # 获取策略推荐的投票目标
-        recommended = self.strategy_module.get_recommended_vote_target(candidates)
+        recommended = self.strategy_module.get_recommended_vote_target(valid_candidates)
 
         # 获取怀疑列表
         suspicion_summary = self.private_memory.get_suspicion_summary()
         top_suspects = self.private_memory.get_top_suspects(3)
 
+        # 【实现】检查怀疑对象是否在有效候选人中
+        for suspect_id in top_suspects:
+            # suspect_id 可能是 agent_id 或 name（简化处理）
+            if suspect_id in valid_candidates:
+                # 如果怀疑对象在候选人中，记录日志
+                logger.info(f"{self.name} 发现怀疑对象 {suspect_id} 在候选人中")
+
         # 构建投票提示
-        candidates_text = "、".join(candidates)
+        candidates_text = "、".join(valid_candidates)
         prompt = f"""【投票阶段】
 
 候选人：{candidates_text}
@@ -306,6 +346,10 @@ class Agent:
 {suspicion_summary}
 
 你的策略推荐投票对象：{recommended if recommended else '无特定推荐'}
+
+【重要规则】
+- 你不能投票给自己（{self.name}）
+- 请只从候选人列表中选择一人
 
 请根据你的判断投票。
 只需回复候选人名字，不要有其他内容。
@@ -318,26 +362,26 @@ class Agent:
         messages = self.memory.get_messages_for_llm()
         response = self.llm.chat(messages, **kwargs).strip()
 
-        # 验证投票是否有效
-        for candidate in candidates:
+        # 验证投票是否有效（排除自己）
+        for candidate in valid_candidates:
             if candidate in response:
                 logger.info(f"{self.name}投票给: {candidate}")
                 return candidate
 
         # 如果 LLM 没有返回有效候选人，使用策略推荐
-        if recommended and recommended in candidates:
+        if recommended and recommended in valid_candidates:
             logger.info(f"{self.name}使用策略推荐投票: {recommended}")
             return recommended
 
-        # 如果有怀疑对象在候选人中，优先投票
+        # 【实现】如果有怀疑对象在有效候选人中，优先投票
         for suspect_id in top_suspects:
-            # 这里需要将 agent_id 转换为名称
-            # 简化处理：直接检查名称
-            pass
+            if suspect_id in valid_candidates:
+                logger.info(f"{self.name}根据怀疑列表投票: {suspect_id}")
+                return suspect_id
 
-        # 最后随机选择
+        # 最后随机选择（从有效候选人中）
         import random
-        voted = random.choice(candidates)
+        voted = random.choice(valid_candidates)
         logger.warning(f"{self.name}的投票无效，随机选择: {voted}")
         return voted
 

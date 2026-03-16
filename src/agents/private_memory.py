@@ -68,18 +68,20 @@ class PrivateMemory:
     这是实现 Agent 独立性的关键组件。
     """
 
-    def __init__(self, max_thoughts: int = 100):
+    def __init__(self, max_thoughts: int = 100, self_name: str = None):
         """
         初始化私有记忆
 
         Args:
             max_thoughts: 最大思考记录数量
+            self_name: 自己的名字（用于排除对自己的怀疑）
         """
         self.thoughts: List[PrivateThought] = []
         self.suspicion_records: Dict[str, SuspicionRecord] = {}  # agent_id -> record
         self.strategy_notes: List[str] = []
         self.observations: List[str] = []
         self.max_thoughts = max_thoughts
+        self.self_name = self_name  # 记录自己的名字
 
         # 当前策略
         self.current_strategy: Optional[str] = None
@@ -117,6 +119,11 @@ class PrivateMemory:
             reason: 怀疑原因
             round_num: 当前轮次
         """
+        # 【关键】绝对不能怀疑自己
+        if self.self_name and (agent_id == self.self_name or agent_name == self.self_name):
+            logger.warning(f"尝试怀疑自己 ({self.self_name})，已阻止")
+            return
+
         # 如果已有记录，更新分数（取平均或最新）
         if agent_id in self.suspicion_records:
             existing = self.suspicion_records[agent_id]
@@ -150,9 +157,17 @@ class PrivateMemory:
         if not self.suspicion_records:
             return "暂无怀疑对象"
 
-        # 按分数排序
+        # 【修复】过滤掉自己，按分数排序
+        filtered_suspicions = [
+            r for r in self.suspicion_records.values()
+            if not (self.self_name and (r.agent_id == self.self_name or r.agent_name == self.self_name))
+        ]
+
+        if not filtered_suspicions:
+            return "暂无怀疑对象"
+
         sorted_suspicions = sorted(
-            self.suspicion_records.values(),
+            filtered_suspicions,
             key=lambda x: x.score,
             reverse=True
         )[:top_n]
@@ -178,8 +193,17 @@ class PrivateMemory:
         if not self.suspicion_records:
             return []
 
+        # 【修复】过滤掉自己
+        filtered_suspicions = [
+            r for r in self.suspicion_records.values()
+            if not (self.self_name and (r.agent_id == self.self_name or r.agent_name == self.self_name))
+        ]
+
+        if not filtered_suspicions:
+            return []
+
         sorted_suspicions = sorted(
-            self.suspicion_records.values(),
+            filtered_suspicions,
             key=lambda x: x.score,
             reverse=True
         )[:n]
